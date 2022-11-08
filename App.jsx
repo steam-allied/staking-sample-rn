@@ -10,8 +10,9 @@ import {
   Button,
   ScrollView,
   Linking,
+  ActivityIndicator,
 } from 'react-native';
-import {Picker} from '@react-native-picker/picker';
+import SelectDropdown from 'react-native-select-dropdown';
 import {
   useWalletConnect,
   withWalletConnect,
@@ -29,22 +30,27 @@ const App = () => {
   const currency = useRef('');
   const amount = useRef(NaN);
   const contracts = useRef([]);
+  const web3 = useRef();
+  const ReceiptChecker = useRef();
   const [transactions, setTransactions] = useState([]);
   const [TxHash, setTxHash] = useState('');
-  const [ShowPopup, setShowPopup] = useState(false);
+  const [ShowSuccess, setShowSuccess] = useState(false);
   const [showTxns, setShowTxns] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const tokens = ['BTC', 'DOGE', 'SHIB', 'MATIC', 'USDT'];
 
   useEffect(() => {
-    const web3 = new Web3(
+    const Web3Instance = new Web3(
       new Web3.providers.HttpProvider(
         'https://sepolia.infura.io/v3/129c3e4e823e47aa86199d3c14bf5456',
       ),
     );
-    const TxContract = new web3.eth.Contract(
+    web3.current = Web3Instance;
+    const TxContract = new Web3Instance.eth.Contract(
       recorder.abi,
       recorder.networks['11155111'].address,
     );
-    const TokenContract = new web3.eth.Contract(
+    const TokenContract = new Web3Instance.eth.Contract(
       token.abi,
       token.networks['11155111'].address,
     );
@@ -54,6 +60,13 @@ const App = () => {
   useEffect(() => {
     console.log('txns', transactions);
   }, [transactions]);
+
+  useEffect(() => {
+    if (ShowSuccess) {
+      clearInterval(ReceiptChecker.current);
+      setLoading(false);
+    }
+  }, [ShowSuccess]);
 
   const Txns = async () => {
     await GetTxns();
@@ -78,7 +91,7 @@ const App = () => {
 
   const SubmitHandle = e => {
     e.preventDefault();
-    // ShowLoading();
+    setLoading(true);
     // approving allowance for recorder contract
     contracts.current[1].methods
       .GetBalance(wallet._accounts[0])
@@ -139,7 +152,7 @@ const App = () => {
               [],
               {cancelable: true},
             );
-            // HideLoading();
+            setLoading(false);
           }
         }
       });
@@ -169,86 +182,78 @@ const App = () => {
       )
       .encodeABI();
     try {
-      const res = await wallet.sendTransaction({
+      const TransactionHash = await wallet.sendTransaction({
         from: wallet._accounts[0],
         to: recorder.networks['11155111'].address,
         data,
       });
-      console.log('tx hash', res);
-      setTxHash(res);
-      await axios
-        .post('http://52.198.224.56:4000/tx-data', {
+      console.log('tx hash', TransactionHash);
+      setTxHash(TransactionHash);
+      ReceiptChecker.current = setInterval(() => {
+        console.log('listener attached');
+        web3.current.eth
+          .getTransactionReceipt(TransactionHash)
+          .then(receipt => {
+            console.log(receipt);
+            if (receipt.status) {
+              setShowSuccess(true);
+            }
+          });
+      }, 15000);
+      await axios.post('http://52.198.224.56:4000/tx-data', {
+        address: wallet._accounts[0],
+        amount: amount.current,
+        ContentHash: hash,
+        TxHash: TransactionHash,
+        date,
+        currency: currency.current,
+      });
+      // setShowSuccess(true);
+      const response = await axios.post(
+        'http://52.198.224.56:4000/tx-by-address',
+        {
           address: wallet._accounts[0],
-          amount: amount.current,
-          ContentHash: hash,
-          TxHash: res,
-          date,
-          currency: currency.current,
-        })
-        .then(async res => {
-          setShowPopup(true);
-          const response = await axios.post(
-            'http://52.198.224.56:4000/tx-by-address',
-            {
-              address: wallet._accounts[0],
-            },
-          );
-          setTransactions(response.data.rows);
-          // HideLoading();
-        });
+        },
+      );
+      setTransactions(response.data.rows);
     } catch (err) {
       console.error(err);
     }
-    /*.on('receipt', async receipt => {
-        console.log('successful tx!', receipt);
-        setShowPopup(true)
-        const response = await axios.post(
-          'http://52.198.224.56:4000/tx-by-address',
-          {
-            address: wallet._accounts[0],
-          },
-        );
-        setTransactions(response.data.rows);
-        HideLoading();
-      }); */
   };
 
-  const ShowLoading = () => {
-    const animation = document.querySelector('.pending');
-    const submit = document.querySelector('#transact');
-    animation.style.display = 'flex';
-    submit.disabled = true;
-  };
+  const blu = 'rgb(2, 145, 222)';
 
-  const HideLoading = () => {
-    const animation = document.querySelector('.pending');
-    const submit = document.querySelector('#transact');
-    animation.style.display = 'none';
-    submit.disabled = false;
-  };
   return wallet.connected ? (
     <View style={styles.App}>
-      <Button
-        title="Kill Connection"
-        onPress={() => {
-          wallet.killSession();
-        }}></Button>
       <View style={styles.FormWrapper}>
-        <Text style={styles.h1}>TRAX</Text>
+        <View style={{backgroundColor: blu, marginTop: '-13.1%'}}>
+          <Text style={styles.h1}>TRAX</Text>
+        </View>
         <View style={styles.field}>
           <Text>Currency</Text>
-          <Picker
-            selectedValue={'Select crypto token'}
-            style={styles.input}
-            onValueChange={val => {
-              currency.current = val;
-            }}>
-            <Picker.Item label="BTC" value="bitcoin" />
-            <Picker.Item label="DOGE" value="dogecoin" />
-            <Picker.Item label="SHIB" value="shiba inu" />
-            <Picker.Item label="MATIC" value="polygon" />
-            <Picker.Item label="USDT" value="tether" />
-          </Picker>
+          <SelectDropdown
+            data={['bitcoin', 'dogecoin', 'shiba inu', 'polygon', 'tether']}
+            defaultButtonText="Select crypto token"
+            buttonStyle={{backgroundColor: 'transparent', width: '100%'}}
+            buttonTextStyle={{
+              marginLeft: '-57%',
+              fontSize: 14,
+            }}
+            onSelect={(selectedItem, index) => {
+              currency.current = selectedItem;
+            }}
+            buttonTextAfterSelection={(selectedItem, index) => {
+              // text represented after item is selected
+              // if data array is an array of objects then return selectedItem.property to render after item is selected
+              return tokens[index];
+            }}
+            rowTextForSelection={(item, index) => {
+              // text represented for each item in dropdown
+              // if data array is an array of objects then return item.property to represent item in dropdown
+              return tokens[index];
+            }}
+            dropdownStyle={{width: '80%'}}
+          />
           <View style={styles.input} />
         </View>
         <View style={styles.field}>
@@ -265,24 +270,38 @@ const App = () => {
         <TouchableOpacity onPress={SubmitHandle} style={styles.btn2}>
           <Text style={styles.BtnTxt}>Transact</Text>
         </TouchableOpacity>
-        {/* <View className="pending">
-          <View className="spinner"></View>
-          <Text className="loading-msg">Transaction pending</Text>
-        </View> */}
       </View>
       <TouchableOpacity onPress={Txns}>
         <Text style={styles.BtnTxt2}>View Your Transactions</Text>
       </TouchableOpacity>
-      <Modal animationType="slide" visible={ShowPopup}>
+      <View style={{marginTop: '23.4%'}}>
+        <Button
+          title="Kill Connection"
+          onPress={() => {
+            wallet.killSession();
+          }}></Button>
+      </View>
+      <Modal animationType="slide" visible={ShowSuccess}>
         <View style={styles.modal}>
           <TouchableOpacity
             style={styles.close}
             onPress={() => {
-              setShowPopup(false);
+              setShowSuccess(false);
             }}>
-            <Text style={{fontSize: 29, fontWeight: 'bold'}}>X</Text>
+            <Text
+              style={{
+                fontSize: 20,
+                fontWeight: 'bold',
+                color: blu,
+                textAlign: 'center',
+                marginTop: '5%',
+              }}>
+              {'< BACK'}
+            </Text>
           </TouchableOpacity>
-          <Text style={styles.h2}>Transaction Successful!</Text>
+          <View style={{marginBottom: '10%', backgroundColor: blu}}>
+            <Text style={styles.h2}>Transaction Successful!</Text>
+          </View>
           <View style={styles.tx}>
             <View>
               <Text style={styles.h3}>Hash</Text>
@@ -305,17 +324,6 @@ const App = () => {
               </Text>
             </View>
           </View>
-          {/* <TouchableOpacity
-            className="scroll"
-            onClick={() => {
-              window.scrollBy({
-                top: document.body.scrollHeight,
-                behavior: 'smooth',
-              });
-              ModalCloser();
-            }}>
-            <Text>More Info</Text>
-          </TouchableOpacity> */}
         </View>
       </Modal>
       <Modal animationType="slide" visible={showTxns}>
@@ -325,9 +333,18 @@ const App = () => {
             onPress={() => {
               setShowTxns(false);
             }}>
-            <Text style={{fontSize: 29, fontWeight: 'bold'}}>X</Text>
+            <Text
+              style={{
+                fontSize: 20,
+                fontWeight: 'bold',
+                color: blu,
+                textAlign: 'center',
+                marginTop: '5%',
+              }}>
+              {'< BACK'}
+            </Text>
           </TouchableOpacity>
-          <View style={{marginBottom: '10%'}}>
+          <View style={{marginBottom: '10%', backgroundColor: blu}}>
             <Text style={styles.h2}>Transactions By</Text>
             <Text style={styles.h4}>{wallet._accounts[0]}</Text>
           </View>
@@ -366,15 +383,23 @@ const App = () => {
           </ScrollView>
         </View>
       </Modal>
+      <Modal animationType="slide" visible={loading} transparent>
+        <View style={styles.pending}>
+          <ActivityIndicator size="large" color={blu} />
+          <Text style={styles.LoadingMsg}>Transaction pending</Text>
+        </View>
+      </Modal>
     </View>
   ) : (
-    <TouchableOpacity
-      onPress={() => {
-        wallet.connect();
-      }}
-      style={styles.btn1}>
-      <Text style={styles.BtnTxt}>Connect</Text>
-    </TouchableOpacity>
+    <View style={styles.App}>
+      <TouchableOpacity
+        onPress={() => {
+          wallet.connect();
+        }}
+        style={styles.btn1}>
+        <Text style={styles.BtnTxt}>Connect</Text>
+      </TouchableOpacity>
+    </View>
   );
 };
 
@@ -384,11 +409,11 @@ const styles = StyleSheet.create({
   },
   btn1: {
     backgroundColor: 'rgb(2, 145, 222)',
-    marginTop: 350,
-    padding: 15,
-    width: 200,
+    marginTop: '90%',
+    width: '50%',
+    padding: '4%',
     borderRadius: 5,
-    marginLeft: 100,
+    marginLeft: '25%',
   },
   btn2: {
     backgroundColor: 'rgb(2, 145, 222)',
@@ -408,25 +433,25 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   h1: {
-    color: 'rgb(2, 145, 222)',
+    color: 'white',
     fontSize: 50,
     fontWeight: 'bold',
     textAlign: 'center',
   },
   h2: {
-    fontSize: 40,
+    fontSize: 35,
     fontWeight: 'bold',
-    marginTop: '22%',
+    marginTop: '15%',
     textAlign: 'center',
-    color: 'rgb(2, 145, 222)',
+    color: 'white',
   },
   h3: {
     fontSize: 25,
     color: 'black',
   },
   h4: {
-    color: 'rgb(2, 145, 222)',
-    fontSize: 18,
+    color: 'white',
+    fontSize: 16,
     fontWeight: 'bold',
     textAlign: 'center',
   },
@@ -449,12 +474,25 @@ const styles = StyleSheet.create({
   modal: {
     flex: 1,
   },
+  pending: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  LoadingMsg: {
+    fontSize: 17,
+    fontWeight: 'bold',
+  },
   close: {
-    height: '12%',
-    width: '5%',
+    height: '5%',
+    width: '25%',
     position: 'absolute',
-    left: '88%',
+    zIndex: 2,
     top: '2%',
+    right: '72%',
+    backgroundColor: 'white',
+    borderRadius: 50,
   },
   tx: {
     height: '40%',
